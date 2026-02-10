@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Image Region Selector</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"
+    />
+    <!-- Add Meyda.js for audio analysis -->
+    <script src="https://unpkg.com/meyda/dist/web/meyda.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial;
+        background-color: #000;
+        color: #fff;
+      }
+      #container {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        background-color: #000;
+      }
+      #controls {
+        padding: 10px;
+        background-color: #222;
+      }
+      #map {
+        flex-grow: 1;
+      }
+      .hidden {
+        display: none;
+      }
+      .layer-controls {
+        position: absolute;
+        top: 70px;
+        right: 10px;
+        background: #333;
+        border: 1px solid #555;
+        box-shadow: 0 0 10px rgba(255, 255, 255, 0.2);
+        padding: 10px;
+        z-index: 1000;
+        border-radius: 4px;
+        color: #fff;
+      }
+      .layer-control-item {
+        margin: 5px 0;
+      }
+      .animation-button {
+        margin-top: 10px;
+        padding: 5px 10px;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .animation-button.active {
+        background-color: #f44336;
+      }
+      .audio-controls {
+        margin-top: 10px;
+      }
+      .slider-container {
+        margin-top: 5px;
+      }
+      .slider-label {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+      }
+      .volume-meter {
+        width: 100%;
+        height: 10px;
+        background-color: #e0e0e0;
+        margin-top: 5px;
+      }
+      .volume-meter-fill {
+        height: 100%;
+        width: 0%;
+        background-color: #4caf50;
+        transition: none !important;
+      }
+      /* Collapse button styles */
+      .collapse-button {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        background-color: #555;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        width: 24px;
+        height: 24px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+      }
+      /* Collapsed state styles */
+      .layer-controls.collapsed {
+        width: 30px;
+        height: 30px;
+        overflow: hidden;
+        padding: 0;
+      }
+      .layer-controls.collapsed .collapse-button {
+        top: 3px;
+        right: 3px;
+      }
+      .layer-controls.collapsed .layer-control-content {
+        display: none;
+      }
+      .help-message {
+        font-size: 12px;
+        color: #eeeeee;
+        font-style: italic;
+        margin: 5px 0;
+        line-height: 1.2;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="controls">
+        <input type="file" id="imageInput" accept="image/*" />
+        <div class="help-message">
+          1. Upload a photo. 2. Circle the mouth. 3. Animate w/ a microphone.
+        </div>
+      </div>
+      <div id="map"></div>
+      <div id="layer-controls" class="layer-controls hidden">
+        <button id="collapse-controls" class="collapse-button">−</button>
+        <div class="layer-control-content">
+          <div class="layer-control-item">
+            <input type="checkbox" id="toggle-original" checked />
+            <label for="toggle-original">Original Image</label>
+          </div>
+          <div class="layer-control-item">
+            <input type="checkbox" id="toggle-selection" />
+            <label for="toggle-selection">Selection</label>
+          </div>
+          <div class="layer-control-item">
+            <button id="animateBtn" class="animation-button">
+              Animate with Microphone
+            </button>
+          </div>
+          <div class="audio-controls hidden" id="audio-controls">
+            <div>
+              Sensitivity:
+              <input
+                type="range"
+                min="1"
+                max="20"
+                value="5"
+                id="sensitivity-slider"
+              />
+            </div>
+            <div class="slider-container">
+              <div>Movement Distance:</div>
+              <input
+                type="range"
+                min="1"
+                max="100"
+                value="20"
+                id="movement-slider"
+              />
+              <div class="slider-label">
+                <span>1%</span>
+                <span id="movement-value">20%</span>
+                <span>100%</span>
+              </div>
+            </div>
+            <div>Volume: <span id="volume-value">0</span></div>
+            <div class="volume-meter">
+              <div class="volume-meter-fill" id="volume-meter-fill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+    <script>
+      const map = L.map("map", { crs: L.CRS.Simple, minZoom: -3 });
+      let imageLayer = null,
+        drawnItems = new L.FeatureGroup(),
+        originalImage = null,
+        currentPolygon = null,
+        imageHeight = 0,
+        selectionOverlay = null,
+        selectionCoords = null;
+
+      // Audio variables
+      let audioContext = null;
+      let microphone = null;
+      let analyser = null;
+      let isAnimating = false;
+      let animationId = null; 
+      let sensitivityFactor = 5;
+      let movementDistance = 20; // Default movement distance as percentage
+      let meydaAnalyzer = null; // Add Meyda analyzer variable
+
+      map.addLayer(drawnItems);
+
+      const drawControl = new L.Control.Draw({
+        draw: {
+          polyline: false,
+          polygon: true,
+          circle: false,
+          marker: false,
+          circlemarker: false,
+          rectangle: true,
+        },
+        edit: { featureGroup: drawnItems, remove: true },
+      });
+
+      function convertToImageCoords(latLng) {
+        if (originalImage) {
+          return {
+            x: Math.round(latLng.lng),
+            y: originalImage.height - Math.round(latLng.lat),
+          };
+        }
+        return { x: 0, y: 0 };
+      }
+
+      function cropImageFromPolygon(img, polygonPoints) {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        let minX = Infinity,
+          minY = Infinity,
+          maxX = 0,
+          maxY = 0;
+
+        for (const point of polygonPoints) {
+          minX = Math.min(minX, point.x);
+          minY = Math.min(minY, point.y);
+          maxX = Math.max(maxX, point.x);
+          maxY = Math.max(maxY, point.y);
+        }
+
+        minX = Math.max(0, Math.floor(minX));
+        minY = Math.max(0, Math.floor(minY));
+        maxX = Math.min(img.width, Math.ceil(maxX));
+        maxY = Math.min(img.height, Math.ceil(maxY));
+
+        const width = maxX - minX;
+        const height = maxY - minY;
+
+        if (width <= 0 || height <= 0) {
+          console.error("Invalid crop dimensions", width, height);
+          return null;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, minX, minY, width, height, 0, 0, width, height);
+
+        return {
+          canvas: canvas,
+          bounds: { minX, minY, maxX, maxY },
+          width: width,
+          height: height,
+        };
+      }
+
+      function showSelectionArea(points) {
+        if (!originalImage) return null;
+
+        const debugCanvas = document.createElement("canvas");
+        const ctx = debugCanvas.getContext("2d");
+
+        debugCanvas.width = originalImage.width;
+        debugCanvas.height = originalImage.height;
+
+        ctx.drawImage(originalImage, 0, 0);
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+
+        for (let i = 0; i < points.length; i++) {
+          const point = points[i];
+          if (i === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        }
+
+        ctx.closePath();
+        ctx.stroke();
+        return debugCanvas;
+      }
+
+      function updateSelectionOverlay(points, yOffset = 0) {
+        if (originalImage) {
+          selectionCoords = points; // Store the points for later use
+
+          // Create a copy of the original image and replace selected area with white
+          const modifiedImage = replaceSelectionWithWhite(
+            originalImage,
+            points
+          );
+
+          // Remove previous image layer
+          if (imageLayer) {
+            map.removeLayer(imageLayer);
+          }
+
+          // Create and add a new image overlay with the modified image
+          const bounds = [
+            [0, 0],
+            [imageHeight, originalImage.width],
+          ];
+          imageLayer = L.imageOverlay(modifiedImage.toDataURL(), bounds);
+
+          // Also create the cropped selection as a separate layer
+          // Instead of using cropImageFromPolygon which creates a rectangle,
+          // create an exact polygon-shaped selection
+          const selectionCanvas = document.createElement("canvas");
+          const ctx = selectionCanvas.getContext("2d");
+
+          selectionCanvas.width = originalImage.width;
+          selectionCanvas.height = originalImage.height;
+
+          // Create a clipping path for the polygon with optional Y offset for animation
+          ctx.beginPath();
+          for (let i = 0; i < points.length; i++) {
+            const point = points[i];
+            if (i === 0) ctx.moveTo(point.x, point.y + yOffset);
+            else ctx.lineTo(point.x, point.y + yOffset);
+          }
+          ctx.closePath();
+          ctx.clip();
+
+          // Draw the original image (only the clipped part will show)
+          ctx.drawImage(originalImage, 0, 0);
+
+          // Remove previous overlay if exists
+          if (selectionOverlay) {
+            map.removeLayer(selectionOverlay);
+          }
+
+          // Create data URL from the canvas
+          const dataUrl = selectionCanvas.toDataURL();
+
+          // Use the full image bounds for the overlay
+          const selectionBounds = [
+            [0, 0],
+            [imageHeight, originalImage.width],
+          ];
+
+          // Create and add the overlay
+          selectionOverlay = L.imageOverlay(dataUrl, selectionBounds, {
+            opacity: 0.8,
+            interactive: false,
+            className: "selection-overlay",
+          })//.addTo(map);
+
+          imageLayer.addTo(map);
+
+          // Show layer controls
+          document.getElementById("layer-controls").classList.remove("hidden");
+          document.getElementById("toggle-original").checked = true;
+
+          document.getElementById("toggle-selection").checked = true;
+          toggleSelectionOverlay(true);
+
+          // Remove the blue selection outline
+          map.removeLayer(drawnItems);
+        }
+      }
+
+      function replaceSelectionWithWhite(img, points) {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        canvas.width = img.width;
+        canvas.height = img.height;
+
+        // Draw the original image first
+        ctx.drawImage(img, 0, 0);
+
+        // Fill the selected area with white
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+
+        for (let i = 0; i < points.length; i++) {
+          const point = points[i];
+          if (i === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
+        }
+
+        ctx.closePath();
+        ctx.fill();
+
+        return canvas;
+      }
+
+      async function setupMicrophone() {
+        try {
+          // Create audio context and connect a microphone to an analyser
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          microphone = audioContext.createMediaStreamSource(stream);
+          
+          // Create Meyda analyzer instead of using raw AudioContext analyzer
+          meydaAnalyzer = Meyda.createMeydaAnalyzer({
+            audioContext: audioContext,
+            source: microphone,
+            bufferSize: 512,
+            featureExtractors: ["rms"],
+            callback: handleAudioFeatures
+          });
+          
+          // Start the Meyda analyzer
+          meydaAnalyzer.start();
+          
+          document.getElementById("audio-controls").classList.remove("hidden"); 
+          document.getElementById("animateBtn").textContent = "Stop Microphone";
+          document.getElementById("animateBtn").classList.add("active");
+          return true;
+        } catch (error) {
+          console.error("Error accessing microphone:", error);
+          alert("Could not access microphone: " + error.message);
+          return false;
+        }
+      }
+
+      function stopMicrophone() {
+        if (microphone && audioContext) {
+          // Stop Meyda analyzer if it exists
+          if (meydaAnalyzer) {
+            meydaAnalyzer.stop();
+            meydaAnalyzer = null;
+          }
+          
+          // Disconnect microphone
+          microphone.disconnect();
+          microphone = null;
+
+          // Cancel animation
+          if (animationId) {
+            cancelAnimationFrame(animationId);
+            animationId = null;
+          }
+          
+          moveSelectionLayer(0);
+
+          // Update UI
+          document.getElementById("animateBtn").textContent =
+            "Animate with Microphone";
+          document.getElementById("animateBtn").classList.remove("active");
+          document.getElementById("audio-controls").classList.add("hidden");
+
+          // Reset volume meter
+          document.getElementById("volume-meter-fill").style.width = "0%";
+          document.getElementById("volume-value").textContent = "0";
+        }
+      }
+
+      // New function to handle audio features from Meyda
+      function handleAudioFeatures(features) {
+        if (!isAnimating || !selectionCoords) return;
+        
+        // Get RMS value from Meyda features
+        const rms = features.rms;
+        
+        // Scale RMS to a usable range (0-100)
+        const volumeLevel = Math.min(100, rms * 100 * sensitivityFactor);
+        
+        // Update volume meter display
+        const volumeMeter = document.getElementById("volume-meter-fill");
+        volumeMeter.style.transition = "none";
+        volumeMeter.style.webkitTransition = "none";
+        volumeMeter.style.width = `${volumeLevel}%`;
+        document.getElementById("volume-value").textContent = Math.round(rms * 100); 
+        volumeMeter.offsetHeight; 
+        moveSelectionLayer(volumeLevel);
+      }
+      function moveSelectionLayer(volumeLevel) {
+        if (selectionOverlay) {
+          // Calculate maximum movement as percentage of image height
+          const maxMovement = (movementDistance / 100) * imageHeight;
+          
+          // Scale movement by volume level
+          const yOffset = -(volumeLevel / 100) * maxMovement; 
+          selectionOverlay.setOpacity(0.8);
+          selectionOverlay.setBounds([
+            [0 + yOffset, 0],
+            [imageHeight + yOffset, originalImage.width],
+          ]);
+        }
+      }
+
+      function toggleAnimation() {
+        if (isAnimating) { 
+          isAnimating = false;
+          stopMicrophone();
+        } else { 
+          if (selectionCoords) {
+            isAnimating = true;
+            setupMicrophone();
+          }
+        }
+      }
+
+      document
+        .getElementById("imageInput")
+        .addEventListener("change", function (e) {
+          if (e.target.files && e.target.files[0]) {
+            const reader = new FileReader();
+
+            reader.onload = function (event) {
+              if (imageLayer) map.removeLayer(imageLayer);
+              drawnItems.clearLayers();
+
+              const img = new Image();
+              img.onload = function () {
+                originalImage = img;
+
+                const width = this.width;
+                const height = this.height;
+                imageHeight = height;
+                const bounds = [
+                  [0, 0],
+                  [height, width],
+                ];
+
+                imageLayer = L.imageOverlay(event.target.result, bounds);
+                imageLayer.addTo(map);
+                map.fitBounds(bounds);
+
+                if (!map.drawControl) {
+                  map.addControl(drawControl);
+                  map.drawControl = true;
+                }
+
+                document
+                  .getElementById("layer-controls")
+                  .classList.remove("hidden");
+                document.getElementById("toggle-original").checked = true;
+              };
+
+              img.src = event.target.result;
+            };
+
+            reader.readAsDataURL(e.target.files[0]);
+          } 
+          if (isAnimating) {
+            toggleAnimation();
+          }
+        });
+
+      // Add event listeners for layer toggles
+      document
+        .getElementById("toggle-original")
+        .addEventListener("change", function () {
+          if (imageLayer) {
+            if (this.checked) {
+              map.addLayer(imageLayer);
+            } else {
+              map.removeLayer(imageLayer);
+            }
+          }
+        });
+
+      function toggleSelectionOverlay(checked) {
+        if (selectionOverlay) {
+          if (checked) {
+        map.addLayer(selectionOverlay);
+          } else {
+        map.removeLayer(selectionOverlay);
+          }
+        }
+      }
+
+      document
+        .getElementById("toggle-selection")
+        .addEventListener("change", function () {
+          toggleSelectionOverlay(this.checked);
+        });
+
+      // Collapse/expand controls functionality
+      document
+        .getElementById("collapse-controls")
+        .addEventListener("click", function() {
+          const controlsPanel = document.getElementById("layer-controls");
+          const isCollapsed = controlsPanel.classList.toggle("collapsed");
+          this.textContent = isCollapsed ? "+" : "−";
+        });
+
+      // Add animation button event listener
+      document
+        .getElementById("animateBtn")
+        .addEventListener("click", toggleAnimation);
+
+      // Add sensitivity slider event listener
+      document
+        .getElementById("sensitivity-slider")
+        .addEventListener("input", function () {
+          sensitivityFactor = parseInt(this.value);
+        });
+
+      // Add movement slider event listener
+      document
+        .getElementById("movement-slider")
+        .addEventListener("input", function () {
+          movementDistance = parseInt(this.value);
+          document.getElementById("movement-value").textContent = movementDistance + "%";
+        });
+
+      map.on(L.Draw.Event.CREATED, function (event) {
+        try {
+          drawnItems.clearLayers();
+          const layer = event.layer;
+          drawnItems.addLayer(layer);
+          currentPolygon = layer;
+
+          // Stop animation if running when creating a new selection
+          if (isAnimating) {
+            toggleAnimation();
+          }
+
+          if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
+            const latLngs = layer.getLatLngs()[0];
+            const points = latLngs.map((latLng) =>
+              convertToImageCoords(latLng)
+            );
+            updateSelectionOverlay(points);
+          }
+        } catch (error) {
+          console.error("Error during crop operation:", error);
+          alert("Error processing selection: " + error.message);
+        }
+      });
+
+      map.on("draw:edited", function (e) {
+        try {
+          e.layers.eachLayer(function (layer) {
+            if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
+              currentPolygon = layer;
+              const latLngs = layer.getLatLngs()[0];
+              const points = latLngs.map((latLng) =>
+                convertToImageCoords(latLng)
+              );
+              updateSelectionOverlay(points);
+            }
+          });
+        } catch (error) {
+          console.error("Error during edit crop operation:", error);
+          alert("Error updating selection: " + error.message);
+        }
+      });
+
+      map.on("draw:deleted", function () {
+        if (selectionOverlay) {
+          map.removeLayer(selectionOverlay);
+          selectionOverlay = null;
+          document.getElementById("toggle-selection").checked = false;
+
+          // Add back the drawing layer if it was removed
+          if (!map.hasLayer(drawnItems)) {
+            map.addLayer(drawnItems);
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
