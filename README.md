@@ -1,15 +1,13 @@
 # Spmouth
 
+![Spmouth webpage example](image.png)
+
 - Live site: https://karptic.github.io/spmouth/
 
 This app replicates the simple cut-out mouth effect from “South Park”.
 
 A tiny, just-for-fun webpage made for a friend.
 It helps record short videos of a character mouth/face so he can dub over them later.
-
-## Example
-
-![Spmouth webpage example](image.png)
 
 ## How to use
 
